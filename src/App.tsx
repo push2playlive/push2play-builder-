@@ -61,7 +61,10 @@ import {
   Database,
   Cpu,
   Globe,
-  Key
+  Key,
+  Activity,
+  LogIn,
+  LogOut
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -179,7 +182,78 @@ export default function App() {
     }
   });
 
-  const [adminSubTab, setAdminSubTab] = useState<"moderation" | "integrations">("moderation");
+  const [adminSubTab, setAdminSubTab] = useState<"moderation" | "integrations" | "health">("moderation");
+
+  // --- Simulated Authentication State ---
+  const [isSimLoggedIn, setIsSimLoggedIn] = useState<boolean>(true);
+  const [simUserEmail, setSimUserEmail] = useState<string>("nexusos@commandnexus.net");
+  const [simUserRole, setSimUserRole] = useState<"admin" | "member">("admin");
+  const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
+
+  // --- API Health Diagnostics States ---
+  const [agentHealthStatus, setAgentHealthStatus] = useState<"idle" | "checking" | "connected" | "failed" | "timeout">("idle");
+  const [agentLatency, setAgentLatency] = useState<number | null>(null);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  const [supabaseHealthStatus, setSupabaseHealthStatus] = useState<"idle" | "checking" | "connected" | "failed" | "timeout">("idle");
+  const [supabaseLatency, setSupabaseLatency] = useState<number | null>(null);
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
+  const [lastCheckedTime, setLastCheckedTime] = useState<string | null>(null);
+
+  const runApiHealthDiagnostics = async () => {
+    setAgentHealthStatus("checking");
+    setSupabaseHealthStatus("checking");
+    setAgentLatency(null);
+    setSupabaseLatency(null);
+    setAgentError(null);
+    setSupabaseError(null);
+
+    const targetAgentUrl = appConfig.adminConfig?.agentApiUrl || "https://api.pushplay.live/agent";
+    const targetSupabaseUrl = appConfig.adminConfig?.supabaseUrl || "https://your-supabase-project.supabase.co";
+
+    const pingUrl = async (url: string) => {
+      const startTime = performance.now();
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 4000);
+        
+        await fetch(url, {
+          method: "GET",
+          mode: "no-cors",
+          signal: controller.signal
+        });
+        clearTimeout(id);
+        const duration = Math.round(performance.now() - startTime);
+        return { status: "connected" as const, latency: duration, error: null };
+      } catch (err: any) {
+        const duration = Math.round(performance.now() - startTime);
+        if (err.name === "AbortError" || err.message?.includes("aborted")) {
+          return { status: "timeout" as const, latency: duration, error: "Connection Timed Out (4s)" };
+        }
+        return { status: "failed" as const, latency: duration, error: err.message || "Network Error" };
+      }
+    };
+
+    const [agentRes, supabaseRes] = await Promise.all([
+      pingUrl(targetAgentUrl),
+      pingUrl(targetSupabaseUrl)
+    ]);
+
+    setAgentHealthStatus(agentRes.status);
+    setAgentLatency(agentRes.latency);
+    setAgentError(agentRes.error);
+
+    setSupabaseHealthStatus(supabaseRes.status);
+    setSupabaseLatency(supabaseRes.latency);
+    setSupabaseError(supabaseRes.error);
+
+    setLastCheckedTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+  };
+
+  useEffect(() => {
+    if (adminSubTab === "health") {
+      runApiHealthDiagnostics();
+    }
+  }, [adminSubTab]);
 
   // --- Local states for Integrations & API Form ---
   const [localOllamaCapable, setLocalOllamaCapable] = useState(true);
@@ -1209,22 +1283,73 @@ export const creators: Creator[] = ${stringifiedCreators};
                   </div>
 
                   {/* Actions right mock header */}
-                  <div className="flex items-center space-x-2 flex-shrink-0">
-                    {appConfig.features.upload && (
+                  <div className="flex items-center space-x-1.5 sm:space-x-2 flex-shrink-0">
+                    {isSimLoggedIn ? (
+                      <>
+                        {appConfig.features.upload && simUserRole === "admin" && (
+                          <button 
+                            onClick={() => setShowUploadModal(true)}
+                            className="flex items-center space-x-1 rounded-full border border-gray-800 bg-[#141416] px-2.5 py-1 text-[9px] font-bold text-white hover:bg-gray-800 animate-fade-in"
+                          >
+                            <Plus className="h-2.5 w-2.5" />
+                            <span className="hidden sm:inline">Create</span>
+                          </button>
+                        )}
+
+                        {/* Tokens count */}
+                        <div className="flex items-center space-x-1 rounded-full border border-amber-900/30 bg-amber-950/10 px-2 py-1 text-[9px] font-bold text-amber-500 animate-fade-in">
+                          <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse" style={{ backgroundColor: appConfig.accentColor }}></span>
+                          <span>{appConfig.tokenCount.toLocaleString()} PPL</span>
+                        </div>
+
+                        {/* User Identity Avatar Dropdown Button */}
+                        <div className="flex items-center gap-1.5 border border-zinc-800 bg-zinc-900/50 pl-1.5 pr-2 py-0.5 rounded-full select-none animate-fade-in">
+                          <div 
+                            className={`w-5 h-5 rounded-full flex items-center justify-center font-black text-[9px] text-black cursor-pointer shadow-sm relative ${
+                              simUserRole === "admin" ? "bg-amber-500" : "bg-blue-400"
+                            }`}
+                            onClick={() => setShowLoginModal(true)}
+                            title="Logged in. Click to switch account."
+                            style={{
+                              backgroundColor: simUserRole === "admin" ? appConfig.accentColor : undefined
+                            }}
+                          >
+                            <span>{simUserEmail.slice(0, 2).toUpperCase()}</span>
+                            {/* Glowing Active Ring */}
+                            <span className="absolute -inset-0.5 rounded-full border border-emerald-500/80 animate-ping opacity-30"></span>
+                          </div>
+                          <div className="flex flex-col text-[7px] leading-tight max-w-[65px]">
+                            <span className="font-extrabold text-white truncate uppercase">{simUserRole}</span>
+                            <span className="text-zinc-500 truncate" title={simUserEmail}>{simUserEmail.split("@")[0]}</span>
+                          </div>
+                          {/* Logout Button */}
+                          <button
+                            onClick={() => {
+                              setIsSimLoggedIn(false);
+                              setSimUserRole("member");
+                              setLatestStatus("Logged out of simulation session");
+                              alert("Signed out successfully from simulation.");
+                            }}
+                            className="text-zinc-500 hover:text-red-400 p-0.5 transition-colors cursor-pointer"
+                            title="Sign Out"
+                          >
+                            <LogOut className="h-2.5 w-2.5" />
+                          </button>
+                        </div>
+                      </>
+                    ) : (
                       <button 
-                        onClick={() => setShowUploadModal(true)}
-                        className="flex items-center space-x-1 rounded-full border border-gray-800 bg-[#141416] px-2.5 py-1 text-[9px] font-bold text-white hover:bg-gray-800"
+                        onClick={() => setShowLoginModal(true)}
+                        className="flex items-center space-x-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[9px] font-black uppercase text-amber-400 hover:bg-amber-500 hover:text-black transition-all cursor-pointer animate-fade-in"
+                        style={{
+                          borderColor: `${appConfig.accentColor}44`,
+                          color: appConfig.accentColor
+                        }}
                       >
-                        <Plus className="h-2.5 w-2.5" />
-                        <span>Create</span>
+                        <LogIn className="h-2.5 w-2.5" />
+                        <span>Sign In</span>
                       </button>
                     )}
-
-                    {/* Tokens count */}
-                    <div className="flex items-center space-x-1 rounded-full border border-amber-900/30 bg-amber-950/10 px-2 py-1 text-[9px] font-bold text-amber-500">
-                      <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse"></span>
-                      <span>{appConfig.tokenCount.toLocaleString()} PPL</span>
-                    </div>
                   </div>
                 </header>
 
@@ -1328,20 +1453,33 @@ export const creators: Creator[] = ${stringifiedCreators};
 
                       {/* Admin Mod dashboard */}
                       {appConfig.features.reports && (
-                        <div className="space-y-1 border-t border-gray-800/60 pt-2">
-                          <button
-                            onClick={() => {
-                              setSimActiveTab("admin");
-                              setSelectedVideo(null);
-                            }}
-                            className="flex w-full items-center space-x-2 rounded px-2 py-1 text-[9px] font-semibold text-red-400 hover:bg-[#1a0e0f]/50 transition-colors"
-                            style={{
-                              backgroundColor: simActiveTab === "admin" && !selectedVideo ? "#1e1112" : "transparent"
-                            }}
-                          >
-                            <ShieldAlert className="h-3 w-3 text-red-500" />
-                            <span className="truncate">Mod Dashboard</span>
-                          </button>
+                        <div className="space-y-1 border-t border-gray-800/60 pt-2 animate-fade-in">
+                          {isSimLoggedIn && simUserRole === "admin" ? (
+                            <button
+                              onClick={() => {
+                                setSimActiveTab("admin");
+                                setSelectedVideo(null);
+                              }}
+                              className="flex w-full items-center space-x-2 rounded px-2 py-1 text-[9px] font-semibold text-red-400 hover:bg-[#1a0e0f]/50 transition-colors cursor-pointer"
+                              style={{
+                                backgroundColor: simActiveTab === "admin" && !selectedVideo ? "#1e1112" : "transparent"
+                              }}
+                            >
+                              <ShieldAlert className="h-3 w-3 text-red-500 animate-pulse" />
+                              <span className="truncate">Mod Dashboard</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setShowLoginModal(true);
+                                alert("Authentication Required: Compliance Mod Dashboard requires Secure Administrator Credentials.");
+                              }}
+                              className="flex w-full items-center space-x-2 rounded px-2 py-1 text-[9px] font-bold text-zinc-500 hover:bg-zinc-900/50 transition-colors cursor-pointer"
+                            >
+                              <Lock className="h-3 w-3 text-zinc-600" />
+                              <span className="truncate text-zinc-500">Mod Dashboard 🔒</span>
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1572,15 +1710,27 @@ export const creators: Creator[] = ${stringifiedCreators};
                             >
                               Integrations & APIs
                             </button>
+                            <button
+                              onClick={() => setAdminSubTab("health")}
+                              className={`px-3 py-1 text-[8px] font-black uppercase tracking-wider rounded transition-all cursor-pointer ${
+                                adminSubTab === "health" 
+                                  ? "bg-emerald-950 text-emerald-400 border border-emerald-900/50" 
+                                  : "text-zinc-400 hover:text-white border border-transparent"
+                              }`}
+                            >
+                              API Health Check
+                            </button>
                           </div>
                           <span 
                             className={`text-[7px] px-1.5 py-0.5 rounded font-black uppercase border ${
                               adminSubTab === "moderation" 
                                 ? "bg-red-950/20 text-red-500 border-red-900/30" 
-                                : "bg-amber-950/20 text-amber-500 border-amber-900/30"
+                                : adminSubTab === "integrations"
+                                  ? "bg-amber-950/20 text-amber-500 border-amber-900/30"
+                                  : "bg-emerald-950/20 text-emerald-500 border-emerald-900/30"
                             }`}
                           >
-                            {adminSubTab === "moderation" ? "Secured Console" : "API Linkage"}
+                            {adminSubTab === "moderation" ? "Secured Console" : adminSubTab === "integrations" ? "API Linkage" : "Diagnostics"}
                           </span>
                         </div>
 
@@ -1724,7 +1874,7 @@ export const creators: Creator[] = ${stringifiedCreators};
                               )}
                             </div>
                           </div>
-                        ) : (
+                        ) : adminSubTab === "integrations" ? (
                           <div className="space-y-4 animate-fade-in">
                             <div className="bg-[#111113] p-2.5 rounded-lg border border-gray-800 space-y-1">
                               <h3 className="text-[10px] font-extrabold text-white uppercase tracking-wider flex items-center gap-1.5">
@@ -1865,6 +2015,212 @@ export const creators: Creator[] = ${stringifiedCreators};
                             >
                               Save & Deploy Integration Settings
                             </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-3 animate-fade-in text-[10px]">
+                            {/* Summary Card */}
+                            <div className="bg-[#111113] p-3 rounded-lg border border-gray-800 flex justify-between items-center gap-4">
+                              <div className="space-y-1">
+                                <h3 className="text-[10px] font-extrabold text-white uppercase tracking-wider flex items-center gap-1.5">
+                                  <Activity className="h-3.5 w-3.5 text-emerald-500 animate-pulse" />
+                                  <span>Diagnostic Control Center</span>
+                                </h3>
+                                <p className="text-[7px] text-zinc-500 uppercase">
+                                  {lastCheckedTime ? `Last evaluated at: ${lastCheckedTime}` : "No diagnostic run initiated yet"}
+                                </p>
+                              </div>
+
+                              <div className="flex items-center gap-3">
+                                <span className="text-[7.5px] font-black uppercase text-zinc-500 tracking-wider text-right hidden sm:inline-block">
+                                  {agentHealthStatus === "checking" ? "Evaluating Stream Channels..." : "Tap Tactile Core to Run"}
+                                </span>
+                                
+                                {/* Tactile Push Button Widget with 2 concentric outer circles/rings */}
+                                <div className="relative w-12 h-12 flex items-center justify-center flex-shrink-0 select-none group">
+                                  {/* Outer Circle 1 (Tactile Bezel Border) */}
+                                  <div className="absolute inset-0 rounded-full bg-gradient-to-b from-zinc-700 via-zinc-850 to-zinc-950 border border-zinc-650/40 shadow-[0_2px_8px_rgba(0,0,0,0.8),inset_0_1px_1px_rgba(255,255,255,0.1)] transition-transform duration-200 group-hover:scale-105"></div>
+                                  
+                                  {/* Outer Circle 2 (Inner Ring Channel Slot) */}
+                                  <div className="absolute inset-1.5 rounded-full bg-black border border-zinc-900/80 flex items-center justify-center shadow-[inset_0_2px_4px_rgba(0,0,0,0.9)]"></div>
+
+                                  {/* Core Clickable Push Button */}
+                                  <button
+                                    onClick={runApiHealthDiagnostics}
+                                    disabled={agentHealthStatus === "checking" || supabaseHealthStatus === "checking"}
+                                    className={`absolute inset-2.5 rounded-full transition-all duration-300 ease-out cursor-pointer flex items-center justify-center active:scale-90 active:translate-y-0.5 ${
+                                      agentHealthStatus === "checking"
+                                        ? "bg-amber-500 text-black scale-[0.85] translate-y-[2px]"
+                                        : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-[0_2px_4px_rgba(0,0,0,0.5)] hover:scale-105"
+                                    }`}
+                                    title="Run Diagnostics"
+                                    style={{
+                                      boxShadow: agentHealthStatus === "checking"
+                                        ? "inset 0 3px 6px rgba(0,0,0,0.85), 0 0 12px rgba(245,158,11,0.5)"
+                                        : "0 3px 6px rgba(0,0,0,0.55), inset 0 1px 2px rgba(255,255,255,0.3)"
+                                    }}
+                                  >
+                                    <RefreshCw className={`h-3 w-3 ${agentHealthStatus === "checking" ? "animate-spin" : ""}`} />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Node Grid */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              
+                              {/* Node 1: Agent API */}
+                              <div className="bg-[#111113] p-3 rounded-lg border border-gray-800 flex flex-col justify-between space-y-3">
+                                <div className="space-y-2">
+                                  <div className="flex justify-between items-center border-b border-gray-800 pb-1.5">
+                                    <h4 className="text-[9px] font-extrabold text-zinc-200 uppercase flex items-center gap-1.5">
+                                      <Globe className="h-3.5 w-3.5 text-purple-400" />
+                                      <span>Agent Gateway API</span>
+                                    </h4>
+                                    <span className={`text-[7px] px-1.5 py-0.5 rounded font-black uppercase border transition-all ${
+                                      agentHealthStatus === "connected"
+                                        ? "bg-emerald-950/40 text-emerald-400 border-emerald-900/30"
+                                        : agentHealthStatus === "checking"
+                                          ? "bg-zinc-900 text-zinc-400 border-zinc-800 animate-pulse"
+                                          : agentHealthStatus === "timeout"
+                                            ? "bg-amber-950/40 text-amber-500 border-amber-900/30"
+                                            : agentHealthStatus === "failed"
+                                              ? "bg-red-950/40 text-red-500 border-red-900/30"
+                                              : "bg-zinc-950 text-zinc-600 border-zinc-800"
+                                    }`}>
+                                      {agentHealthStatus === "idle" ? "READY" : agentHealthStatus.toUpperCase()}
+                                    </span>
+                                  </div>
+
+                                  <div className="space-y-1">
+                                    <span className="text-[7px] uppercase tracking-wider text-zinc-500 font-extrabold block">Configured URL</span>
+                                    <div className="bg-[#141416] border border-gray-800/80 rounded px-2 py-1 flex items-center justify-between gap-1">
+                                      <span className="font-mono text-[7.5px] text-zinc-300 truncate select-all">
+                                        {appConfig.adminConfig?.agentApiUrl || "https://api.pushplay.live/agent"}
+                                      </span>
+                                      <button 
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(appConfig.adminConfig?.agentApiUrl || "https://api.pushplay.live/agent");
+                                          alert("Copied Agent URL to clipboard!");
+                                        }}
+                                        className="text-zinc-600 hover:text-white transition-colors cursor-pointer"
+                                        title="Copy URL"
+                                      >
+                                        <Copy className="h-2.5 w-2.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Diagnostics feedback */}
+                                  <div className="bg-[#141416]/50 p-2 rounded border border-gray-800/50 space-y-1">
+                                    <div className="flex justify-between items-center text-[7px] text-zinc-500 uppercase">
+                                      <span>Latency Roundtrip</span>
+                                      <span className="font-mono font-bold text-zinc-400">
+                                        {agentLatency !== null ? `${agentLatency} ms` : "--"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-[7px] text-zinc-500 uppercase">
+                                      <span>Diagnostics Status</span>
+                                      <span className="font-mono font-bold text-zinc-400">
+                                        {agentError ? "Failed / Blocked" : agentHealthStatus === "connected" ? "Stable (Opaque Mode)" : "Unresolved"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="text-[7px] text-zinc-500 leading-normal bg-zinc-950/40 p-1.5 rounded border border-zinc-900">
+                                  <span className="font-extrabold text-zinc-400 uppercase block mb-0.5 text-[6.5px]">Gateway Advisory:</span>
+                                  This verifies direct TCP connectivity and DNS resolution. Since client pings run inside your browser, local network routers or local firewalls may affect this result.
+                                </div>
+                              </div>
+
+                              {/* Node 2: Supabase */}
+                              <div className="bg-[#111113] p-3 rounded-lg border border-gray-800 flex flex-col justify-between space-y-3">
+                                <div className="space-y-2">
+                                  <div className="flex justify-between items-center border-b border-gray-800 pb-1.5">
+                                    <h4 className="text-[9px] font-extrabold text-zinc-200 uppercase flex items-center gap-1.5">
+                                      <Database className="h-3 w-3 text-emerald-400" />
+                                      <span>Supabase Relational Cloud</span>
+                                    </h4>
+                                    <span className={`text-[7px] px-1.5 py-0.5 rounded font-black uppercase border transition-all ${
+                                      supabaseHealthStatus === "connected"
+                                        ? "bg-emerald-950/40 text-emerald-400 border-emerald-900/30"
+                                        : supabaseHealthStatus === "checking"
+                                          ? "bg-zinc-900 text-zinc-400 border-zinc-800 animate-pulse"
+                                          : supabaseHealthStatus === "timeout"
+                                            ? "bg-amber-950/40 text-amber-500 border-amber-900/30"
+                                            : supabaseHealthStatus === "failed"
+                                              ? "bg-red-950/40 text-red-500 border-red-900/30"
+                                              : "bg-zinc-950 text-zinc-600 border-zinc-800"
+                                    }`}>
+                                      {supabaseHealthStatus === "idle" ? "READY" : supabaseHealthStatus.toUpperCase()}
+                                    </span>
+                                  </div>
+
+                                  <div className="space-y-1">
+                                    <span className="text-[7px] uppercase tracking-wider text-zinc-500 font-extrabold block">Configured URL</span>
+                                    <div className="bg-[#141416] border border-gray-800/80 rounded px-2 py-1 flex items-center justify-between gap-1">
+                                      <span className="font-mono text-[7.5px] text-zinc-300 truncate select-all">
+                                        {appConfig.adminConfig?.supabaseUrl || "https://your-supabase-project.supabase.co"}
+                                      </span>
+                                      <button 
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(appConfig.adminConfig?.supabaseUrl || "https://your-supabase-project.supabase.co");
+                                          alert("Copied Supabase URL to clipboard!");
+                                        }}
+                                        className="text-zinc-600 hover:text-white transition-colors cursor-pointer"
+                                        title="Copy URL"
+                                      >
+                                        <Copy className="h-2.5 w-2.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Diagnostics feedback */}
+                                  <div className="bg-[#141416]/50 p-2 rounded border border-gray-800/50 space-y-1">
+                                    <div className="flex justify-between items-center text-[7px] text-zinc-500 uppercase">
+                                      <span>Latency Roundtrip</span>
+                                      <span className="font-mono font-bold text-zinc-400">
+                                        {supabaseLatency !== null ? `${supabaseLatency} ms` : "--"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between items-center text-[7px] text-zinc-500 uppercase">
+                                      <span>Diagnostics Status</span>
+                                      <span className="font-mono font-bold text-zinc-400">
+                                        {supabaseError ? "Failed / Blocked" : supabaseHealthStatus === "connected" ? "Stable (Opaque Mode)" : "Unresolved"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="text-[7px] text-zinc-500 leading-normal bg-zinc-950/40 p-1.5 rounded border border-zinc-900">
+                                  <span className="font-extrabold text-zinc-400 uppercase block mb-0.5 text-[6.5px]">Database Advisory:</span>
+                                  This validates direct network reachability to the Supabase REST service layer. If you receive "Failed" due to placeholder hostnames, configure a real URL in the Integrations tab first.
+                                </div>
+                              </div>
+
+                            </div>
+
+                            {/* Troubleshooting Info Panel */}
+                            <div className="bg-[#111113] p-3 rounded-lg border border-gray-800 space-y-2">
+                              <h4 className="text-[9px] font-extrabold text-zinc-200 uppercase flex items-center gap-1.5 border-b border-gray-800 pb-1.5">
+                                <Sliders className="h-3 w-3 text-amber-500" style={{ color: appConfig.accentColor }} />
+                                <span>Network Diagnostic Troubleshooting Advisory</span>
+                              </h4>
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[7.5px] text-zinc-400 leading-relaxed">
+                                <div className="space-y-1 bg-[#141416] p-2 rounded border border-gray-800/50">
+                                  <span className="font-bold text-white uppercase block">1. What does 'Connected' mean?</span>
+                                  <span>It means a TCP connection handshake succeeded. Because we use "opaque no-cors" pings, the browser is able to successfully target the URL and measure latency, even if the server does not expose cross-origin headers to allow direct data reading.</span>
+                                </div>
+                                <div className="space-y-1 bg-[#141416] p-2 rounded border border-gray-800/50">
+                                  <span className="font-bold text-white uppercase block">2. Why 'Network Error' or 'Failed'?</span>
+                                  <span>This usually happens if the domain does not exist, if the endpoint is offline, or if standard DNS resolution fails. Make sure the URLs are formatted correctly with `https://` (or `http://` for local testing) and that target hosts are actively online.</span>
+                                </div>
+                                <div className="space-y-1 bg-[#141416] p-2 rounded border border-gray-800/50">
+                                  <span className="font-bold text-white uppercase block">3. Local localhost / CORS Tips</span>
+                                  <span>If you are pointing to a local dev server (e.g., localhost), ensure that server is running locally on your machine. Browsers will let you check localhost endpoints seamlessly as long as the server process is alive!</span>
+                                </div>
+                              </div>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -2227,6 +2583,143 @@ export const creators: Creator[] = ${stringifiedCreators};
                     Publish live stream
                   </button>
                 </form>
+              </div>
+            </div>
+          )}
+
+          {/* SIMULATED LOGIN MODAL DIALOG OVERLAY */}
+          {showLoginModal && (
+            <div id="login-modal" className="absolute inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 z-50 text-[10px] animate-fade-in font-sans">
+              <div className="w-full max-w-xs bg-[#0c0c0e] border border-zinc-850 rounded-xl overflow-hidden shadow-2xl flex flex-col">
+                {/* Modal Header */}
+                <div className="bg-[#141416] p-3 border-b border-zinc-800/80 flex justify-between items-center">
+                  <div className="flex items-center gap-1.5 text-white">
+                    <LogIn className="h-3.5 w-3.5 text-amber-500 animate-pulse" style={{ color: appConfig.accentColor }} />
+                    <span className="font-extrabold uppercase tracking-widest text-[9px]">Secure Access Terminal</span>
+                  </div>
+                  <button 
+                    onClick={() => setShowLoginModal(false)} 
+                    className="text-zinc-500 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {/* Modal Body */}
+                <div className="p-4 space-y-3.5">
+                  <div className="text-center space-y-1">
+                    <h3 className="text-white font-black uppercase text-[10px] tracking-wider">Authentication Gateway</h3>
+                    <p className="text-[7px] text-zinc-500 uppercase">SIGN IN TO ACCESS CORE LEDGER & COMPLIANCE</p>
+                  </div>
+
+                  {/* Auth Presets Helper Badges */}
+                  <div className="bg-[#111113] p-2 rounded border border-gray-800/70 space-y-1.5 text-left">
+                    <span className="text-[6.5px] font-bold uppercase text-zinc-500 tracking-wider block">Credential Hotkeys (Click to Autofill)</span>
+                    <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const emailInput = document.getElementById("login-email") as HTMLInputElement;
+                          const pwdInput = document.getElementById("login-password") as HTMLInputElement;
+                          if (emailInput && pwdInput) {
+                            emailInput.value = "nexusos@commandnexus.net";
+                            pwdInput.value = "admin1234567";
+                          }
+                        }}
+                        className="w-full text-left bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 p-1 rounded text-[7px] flex justify-between items-center text-zinc-300 cursor-pointer"
+                      >
+                        <span className="font-bold flex items-center gap-1">
+                          <span className="h-1 w-1 rounded-full bg-[#f59e0b]" style={{ backgroundColor: appConfig.accentColor }}></span>
+                          nexusos@commandnexus.net (Admin)
+                        </span>
+                        <span className="text-zinc-600 font-mono text-[6.5px]">admin1234567</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const emailInput = document.getElementById("login-email") as HTMLInputElement;
+                          const pwdInput = document.getElementById("login-password") as HTMLInputElement;
+                          if (emailInput && pwdInput) {
+                            emailInput.value = "member@commandnexus.net";
+                            pwdInput.value = "admin1234567";
+                          }
+                        }}
+                        className="w-full text-left bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 p-1 rounded text-[7px] flex justify-between items-center text-zinc-300 cursor-pointer"
+                      >
+                        <span className="font-bold flex items-center gap-1">
+                          <span className="h-1 w-1 rounded-full bg-blue-500"></span>
+                          member@commandnexus.net (Member)
+                        </span>
+                        <span className="text-zinc-600 font-mono text-[6.5px]">admin1234567</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Login Form */}
+                  <form 
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const formData = new FormData(e.currentTarget);
+                      const email = formData.get("email") as string;
+                      const pwd = formData.get("password") as string;
+
+                      if (pwd !== "admin1234567") {
+                        alert("Access Denied: Invalid secure authentication token password. Please use 'admin1234567'.");
+                        return;
+                      }
+
+                      setIsSimLoggedIn(true);
+                      setSimUserEmail(email);
+                      if (email === "nexusos@commandnexus.net") {
+                        setSimUserRole("admin");
+                        setLatestStatus("Logged in securely as platform Administrator");
+                        alert("Access granted: Secure Admin Session Initialized.");
+                      } else {
+                        setSimUserRole("member");
+                        setLatestStatus(`Logged in securely as Member (${email})`);
+                        alert(`Access granted: Member session established for ${email}.`);
+                      }
+                      setShowLoginModal(false);
+                    }}
+                    className="space-y-3 text-left"
+                  >
+                    <div className="space-y-1">
+                      <label className="text-[7px] uppercase tracking-wider text-zinc-500 font-extrabold block">Network Identity (Email)</label>
+                      <input 
+                        id="login-email"
+                        name="email" 
+                        type="email"
+                        required 
+                        placeholder="identity@endpoint.net" 
+                        defaultValue="nexusos@commandnexus.net"
+                        className="w-full bg-[#141416] border border-gray-800 rounded p-1 text-[8px] text-white focus:outline-none focus:border-amber-500" 
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[7px] uppercase tracking-wider text-zinc-500 font-extrabold block">Secure Access Key (Password)</label>
+                      <input 
+                        id="login-password"
+                        name="password" 
+                        type="password"
+                        required 
+                        placeholder="•••••••••••••" 
+                        defaultValue="admin1234567"
+                        className="w-full bg-[#141416] border border-gray-800 rounded p-1 text-[8px] text-white focus:outline-none focus:border-amber-500" 
+                      />
+                    </div>
+
+                    <button 
+                      type="submit" 
+                      className="w-full bg-amber-500 hover:bg-amber-400 text-black py-1.5 rounded text-[8.5px] font-extrabold uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      style={{ backgroundColor: appConfig.accentColor }}
+                    >
+                      <ShieldAlert className="h-3 w-3 text-black" />
+                      <span>Authenticate Session</span>
+                    </button>
+                  </form>
+                </div>
               </div>
             </div>
           )}
