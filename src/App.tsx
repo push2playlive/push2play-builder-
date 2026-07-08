@@ -79,6 +79,10 @@ import {
   Legend
 } from "recharts";
 import { DEFAULT_VIRTUAL_FILES } from "./virtualFiles";
+import { buildPreviewSrcDoc } from "./lib/preview";
+import SettingsModal from "./components/SettingsModal";
+import { routeAIRequest } from "./lib/proxy";
+import { listModels } from "./lib/ollama";
 export interface VirtualVideo {
   id: string;
   title: string;
@@ -116,7 +120,26 @@ export default function App() {
   const [virtualFiles, setVirtualFiles] = useState<Record<string, string>>(() => {
     // Try to load from localStorage first for persistence
     const saved = localStorage.getItem("pp_studio_virtual_files");
-    return saved ? JSON.parse(saved) : DEFAULT_VIRTUAL_FILES;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        let hasUpdates = false;
+        // Merge missing default virtual files so new additions are always available
+        for (const key of Object.keys(DEFAULT_VIRTUAL_FILES)) {
+          if (parsed[key] === undefined) {
+            parsed[key] = DEFAULT_VIRTUAL_FILES[key];
+            hasUpdates = true;
+          }
+        }
+        if (hasUpdates) {
+          localStorage.setItem("pp_studio_virtual_files", JSON.stringify(parsed));
+        }
+        return parsed;
+      } catch (e) {
+        console.error("Error parsing saved virtual files", e);
+      }
+    }
+    return DEFAULT_VIRTUAL_FILES;
   });
   
   const [activeFile, setActiveFile] = useState<string>("src/data.ts");
@@ -131,8 +154,23 @@ export default function App() {
   // --- AI Chat Assistant State ---
   const [chatInput, setChatInput] = useState("");
   const [isCompiling, setIsCompiling] = useState(false);
-  const [modelName, setModelName] = useState("gemini-3.5-flash");
+  const [modelName, setModelName] = useState("gemini-2.5-flash");
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+
+  useEffect(() => {
+    const fetchOllama = async () => {
+      try {
+        const list = await listModels();
+        if (list && list.length > 0) {
+          setOllamaModels(list.map(m => m.name));
+        }
+      } catch (err) {
+        console.warn("Could not load local Ollama models:", err);
+      }
+    };
+    fetchOllama();
+  }, []);
   const [actionHistory, setActionHistory] = useState<string[]>([
     "Initialized PushPlay Studio workspace",
     "Compiled successfully"
@@ -154,10 +192,11 @@ export default function App() {
   ]);
 
   // --- Live Preview Settings ---
-  const [activePreviewTab, setActivePreviewTab] = useState<"preview" | "code">("preview");
+  const [activePreviewTab, setActivePreviewTab] = useState<"preview" | "sandbox" | "code">("preview");
   const [previewDevice, setPreviewDevice] = useState<"desktop" | "mobile">("desktop");
   const [searchQuery, setSearchQuery] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
 
   // --- Dynamic App Simulator State (Parsed from files) ---
   const [appConfig, setAppConfig] = useState({
@@ -198,6 +237,7 @@ export default function App() {
   const [supabaseLatency, setSupabaseLatency] = useState<number | null>(null);
   const [supabaseError, setSupabaseError] = useState<string | null>(null);
   const [lastCheckedTime, setLastCheckedTime] = useState<string | null>(null);
+  const [isDiagnosticPressed, setIsDiagnosticPressed] = useState<boolean>(false);
 
   const runApiHealthDiagnostics = async () => {
     setAgentHealthStatus("checking");
@@ -457,28 +497,18 @@ export default function App() {
     setIsCompiling(true);
 
     try {
-      const response = await fetch("/api/builder/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: promptToSend,
-          files: virtualFiles,
-          systemInstructions: "You are a virtual engineering workspace and code architect for PushPlay Live.",
-          modelName: modelName
-        })
+      const data = await routeAIRequest({
+        prompt: promptToSend,
+        files: virtualFiles,
+        systemInstructions: "You are a virtual engineering workspace and code architect for PushPlay Live.",
+        modelName: modelName
       });
-
-      if (!response.ok) {
-        throw new Error("Failed to contact the server-side Gemini endpoint.");
-      }
-
-      const data = await response.json();
 
       if (data.error) {
         throw new Error(data.error);
       }
 
-      // Merge file changes returned by Gemini
+      // Merge file changes returned by the proxy
       if (data.fileChanges && Array.isArray(data.fileChanges)) {
         const updatedFiles = { ...virtualFiles };
         data.fileChanges.forEach((change: { path: string; content: string }) => {
@@ -523,7 +553,7 @@ export default function App() {
         ...prev,
         {
           sender: "system",
-          text: `🚨 **Gemini Compilation Exception**:\n\n${error.message || "An unexpected network or model error occurred. Please verify your GEMINI_API_KEY in secrets."}`,
+          text: `🚨 **Compilation Exception**:\n\n${error.message || "An unexpected network or model error occurred. Please verify your connection or configurations in Settings."}`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);
@@ -742,6 +772,14 @@ export const creators: Creator[] = ${stringifiedCreators};
 
         <div className="flex items-center gap-3">
           <button 
+            onClick={() => setShowSettings(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold text-zinc-400 hover:text-white border border-[#222222] rounded hover:bg-[#1A1A1A] transition-colors cursor-pointer"
+          >
+            <Settings className="w-3.5 h-3.5 text-amber-500" />
+            <span>Workspace Settings</span>
+          </button>
+
+          <button 
             onClick={() => {
               setVirtualFiles(DEFAULT_VIRTUAL_FILES);
               localStorage.removeItem("pp_studio_virtual_files");
@@ -792,8 +830,18 @@ export const creators: Creator[] = ${stringifiedCreators};
               onChange={(e) => setModelName(e.target.value)}
               className="bg-[#1c1c1e] text-[10px] font-extrabold text-zinc-300 border border-[#333333] rounded px-2 py-1 focus:outline-none cursor-pointer"
             >
-              <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
-              <option value="gemini-3.5-pro">Gemini 3.5 Pro</option>
+              <optgroup label="Gemini Cloud">
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash (Fast & Stable)</option>
+                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                <option value="gemini-3.5-flash">Gemini 3.5 Flash (Thinking)</option>
+                <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Thinking)</option>
+              </optgroup>
+              <optgroup label="Local Ollama">
+                <option value="ollama">Ollama Default</option>
+                {ollamaModels.map(name => (
+                  <option key={name} value={`ollama:${name}`}>{name}</option>
+                ))}
+              </optgroup>
             </select>
           </div>
 
@@ -1146,6 +1194,14 @@ export const creators: Creator[] = ${stringifiedCreators};
                 Live Preview
               </button>
               <button
+                onClick={() => setActivePreviewTab("sandbox")}
+                className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-colors ${
+                  activePreviewTab === "sandbox" ? "bg-amber-500 text-black" : "text-zinc-400 hover:text-white"
+                }`}
+              >
+                Real Sandbox
+              </button>
+              <button
                 onClick={() => setActivePreviewTab("code")}
                 className={`px-3 py-1 text-[10px] font-bold uppercase tracking-widest rounded transition-colors ${
                   activePreviewTab === "code" ? "bg-amber-500 text-black" : "text-zinc-400 hover:text-white"
@@ -1234,6 +1290,27 @@ export const creators: Creator[] = ${stringifiedCreators};
                   <span>Hydrated Active Node Streams ({videos.length})</span>
                 </div>
                 <pre>{JSON.stringify(videos, null, 2)}</pre>
+              </div>
+            ) : activePreviewTab === "sandbox" ? (
+              /* REAL SANDBOX IFRAME VIEW */
+              <div className="w-full h-full bg-[#0a0a0a] rounded-2xl border border-zinc-800 shadow-2xl overflow-hidden flex flex-col">
+                <div className="px-4 py-2 bg-[#141416] border-b border-zinc-800 text-[10px] font-mono flex items-center justify-between text-zinc-400 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="font-bold text-zinc-300">Live In-Browser Sandbox</span>
+                    <span className="text-[9px] text-zinc-500 px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800">{activeFile}</span>
+                  </div>
+                  <div className="text-[9px] text-zinc-500">React 18 + Babel Standalone</div>
+                </div>
+                <div className="flex-1 bg-[#0a0a0a] relative overflow-hidden">
+                  <iframe
+                    id="sandbox-iframe"
+                    title="Sandbox Preview"
+                    className="w-full h-full border-none bg-[#0a0a0a]"
+                    sandbox="allow-scripts"
+                    srcDoc={buildPreviewSrcDoc(editorContent)}
+                  />
+                </div>
               </div>
             ) : (
               /* --- HIGH FIDELITY SIMULATED APP RUNNING INSIDE PREVIEW CONTAINER --- */
@@ -2038,14 +2115,31 @@ export const creators: Creator[] = ${stringifiedCreators};
                                 {/* Tactile Push Button Widget with 2 concentric outer circles/rings */}
                                 <div className="relative w-12 h-12 flex items-center justify-center flex-shrink-0 select-none group">
                                   {/* Outer Circle 1 (Tactile Bezel Border) */}
-                                  <div className="absolute inset-0 rounded-full bg-gradient-to-b from-zinc-700 via-zinc-850 to-zinc-950 border border-zinc-650/40 shadow-[0_2px_8px_rgba(0,0,0,0.8),inset_0_1px_1px_rgba(255,255,255,0.1)] transition-transform duration-200 group-hover:scale-105"></div>
+                                  <div 
+                                    className={`absolute inset-0 rounded-full bg-gradient-to-b from-zinc-700 via-zinc-850 to-zinc-950 border border-zinc-650/40 transition-all duration-300 ${
+                                      isDiagnosticPressed 
+                                        ? "scale-90 shadow-[0_0_15px_rgba(52,211,153,0.5)] border-emerald-500/30" 
+                                        : "shadow-[0_2px_8px_rgba(0,0,0,0.8),inset_0_1px_1px_rgba(255,255,255,0.1)] group-hover:scale-105"
+                                    }`}
+                                  ></div>
                                   
                                   {/* Outer Circle 2 (Inner Ring Channel Slot) */}
-                                  <div className="absolute inset-1.5 rounded-full bg-black border border-zinc-900/80 flex items-center justify-center shadow-[inset_0_2px_4px_rgba(0,0,0,0.9)]"></div>
+                                  <div 
+                                    className={`absolute inset-1.5 rounded-full bg-black border border-zinc-900/80 flex items-center justify-center transition-all duration-300 ${
+                                      isDiagnosticPressed 
+                                        ? "scale-90 shadow-[inset_0_2px_8px_rgba(52,211,153,0.7),0_0_8px_rgba(52,211,153,0.3)] border-emerald-500/20" 
+                                        : "shadow-[inset_0_2px_4px_rgba(0,0,0,0.9)]"
+                                    }`}
+                                  ></div>
 
                                   {/* Core Clickable Push Button */}
                                   <button
                                     onClick={runApiHealthDiagnostics}
+                                    onMouseDown={() => setIsDiagnosticPressed(true)}
+                                    onMouseUp={() => setIsDiagnosticPressed(false)}
+                                    onMouseLeave={() => setIsDiagnosticPressed(false)}
+                                    onTouchStart={() => setIsDiagnosticPressed(true)}
+                                    onTouchEnd={() => setIsDiagnosticPressed(false)}
                                     disabled={agentHealthStatus === "checking" || supabaseHealthStatus === "checking"}
                                     className={`absolute inset-2.5 rounded-full transition-all duration-300 ease-out cursor-pointer flex items-center justify-center active:scale-90 active:translate-y-0.5 ${
                                       agentHealthStatus === "checking"
@@ -2931,6 +3025,7 @@ export const creators: Creator[] = ${stringifiedCreators};
         </div>
       </footer>
 
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

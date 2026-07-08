@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { chatRouter } from "./chatRouter";
 
 dotenv.config();
 
@@ -10,6 +11,9 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: "10mb" }));
+
+// Register Stream/Live Chat API router
+app.use("/api/chat", chatRouter);
 
 // Initialize Google Gemini API securely
 let ai: GoogleGenAI | null = null;
@@ -38,7 +42,7 @@ app.post("/api/builder/chat", async (req, res) => {
     return res.status(400).json({ error: "Missing prompt or files parameter." });
   }
 
-  const selectedModel = modelName || "gemini-3.5-flash";
+  const selectedModel = modelName || "gemini-2.5-flash";
 
   // If no API key is available, use a fallback mock assistant
   if (!ai) {
@@ -97,45 +101,94 @@ You must respond strictly in JSON matching this schema:
 }
 `;
 
-    const response = await ai.models.generateContent({
-      model: selectedModel,
-      contents: prompt,
-      config: {
-        systemInstruction: systemPrompt,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            chatResponse: {
-              type: Type.STRING,
-              description: "Markdown text describing what you updated and answering the user's questions.",
-            },
-            fileChanges: {
-              type: Type.ARRAY,
-              description: "Array of files that you modified. Provide the complete and updated contents of each file.",
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  path: { type: Type.STRING, description: "The virtual file path (e.g., src/App.tsx)." },
-                  content: { type: Type.STRING, description: "The complete updated content for this file." },
+    let response;
+    try {
+      console.log(`Attempting generateContent using model: ${selectedModel}`);
+      response = await ai.models.generateContent({
+        model: selectedModel,
+        contents: prompt,
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              chatResponse: {
+                type: Type.STRING,
+                description: "Markdown text describing what you updated and answering the user's questions.",
+              },
+              fileChanges: {
+                type: Type.ARRAY,
+                description: "Array of files that you modified. Provide the complete and updated contents of each file.",
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    path: { type: Type.STRING, description: "The virtual file path (e.g., src/App.tsx)." },
+                    content: { type: Type.STRING, description: "The complete updated content for this file." },
+                  },
+                  required: ["path", "content"],
                 },
-                required: ["path", "content"],
+              },
+              actionHistory: {
+                type: Type.ARRAY,
+                description: "A list of action steps you took (e.g. ['Edited 1 file', 'Built']).",
+                items: { type: Type.STRING },
+              },
+              updatedStatus: {
+                type: Type.STRING,
+                description: "A short, one-sentence status update of the application.",
               },
             },
-            actionHistory: {
-              type: Type.ARRAY,
-              description: "A list of action steps you took (e.g. ['Edited 1 file', 'Built']).",
-              items: { type: Type.STRING },
-            },
-            updatedStatus: {
-              type: Type.STRING,
-              description: "A short, one-sentence status update of the application.",
+            required: ["chatResponse", "fileChanges", "actionHistory", "updatedStatus"],
+          },
+        },
+      });
+    } catch (modelError: any) {
+      if (selectedModel !== "gemini-2.5-flash") {
+        console.warn(`Model ${selectedModel} failed (${modelError.message || modelError}). Falling back to stable gemini-2.5-flash...`);
+        response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: prompt,
+          config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                chatResponse: {
+                  type: Type.STRING,
+                  description: "Markdown text describing what you updated and answering the user's questions.",
+                },
+                fileChanges: {
+                  type: Type.ARRAY,
+                  description: "Array of files that you modified. Provide the complete and updated contents of each file.",
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      path: { type: Type.STRING, description: "The virtual file path (e.g., src/App.tsx)." },
+                      content: { type: Type.STRING, description: "The complete updated content for this file." },
+                    },
+                    required: ["path", "content"],
+                  },
+                },
+                actionHistory: {
+                  type: Type.ARRAY,
+                  description: "A list of action steps you took (e.g. ['Edited 1 file', 'Built']).",
+                  items: { type: Type.STRING },
+                },
+                updatedStatus: {
+                  type: Type.STRING,
+                  description: "A short, one-sentence status update of the application.",
+                },
+              },
+              required: ["chatResponse", "fileChanges", "actionHistory", "updatedStatus"],
             },
           },
-          required: ["chatResponse", "fileChanges", "actionHistory", "updatedStatus"],
-        },
-      },
-    });
+        });
+      } else {
+        throw modelError;
+      }
+    }
 
     const resultText = response.text;
     res.json(JSON.parse(resultText || "{}"));
