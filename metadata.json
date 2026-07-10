@@ -1,6 +1,6 @@
 {
-  "name": "PushPlay Studio AI",
-  "description": "High-fidelity AI App Builder simulating Google AI Studio with a real-time virtual workspace, code editor, live preview, and integrated Gemini assistant.",
+  "name": "Utube Media",
+  "description": "A high-fidelity, polished, PWA-enabled video, shorts, and music platform.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

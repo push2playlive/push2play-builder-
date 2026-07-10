@@ -9,7 +9,7 @@ export async function listModels(): Promise<OllamaTag[]> {
     const data = await res.json();
     return (data.models || []) as OllamaTag[];
   } catch (err) {
-    console.error('listModels failed', err);
+    console.warn('listModels bypassed or loading local model failed', err);
     return [];
   }
 }

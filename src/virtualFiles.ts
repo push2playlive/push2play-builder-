@@ -381,11 +381,12 @@ interface VideoPlayerProps {
   video: Video;
   comments: Comment[];
   onAddComment: (text: string) => void;
+  onDeleteComment?: (id: string) => void;
   onReport: (id: string) => void;
   accentColor: string;
 }
 
-export default function VideoPlayer({ video, comments, onAddComment, onReport, accentColor }: VideoPlayerProps) {
+export default function VideoPlayer({ video, comments, onAddComment, onDeleteComment, onReport, accentColor }: VideoPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [likes, setLikes] = useState(video.likes);
   const [hasLiked, setHasLiked] = useState(false);
@@ -499,6 +500,7 @@ export default function VideoPlayer({ video, comments, onAddComment, onReport, a
         <CommentsSection 
           comments={comments} 
           onAddComment={onAddComment} 
+          onDeleteComment={onDeleteComment}
           accentColor={accentColor} 
         />
       </div>
@@ -507,16 +509,17 @@ export default function VideoPlayer({ video, comments, onAddComment, onReport, a
 }`,
 
   "src/components/CommentsSection.tsx": `import React, { useState } from "react";
-import { MessageSquare, Send, Heart } from "lucide-react";
+import { MessageSquare, Send, Heart, Trash2 } from "lucide-react";
 import { Comment } from "../types";
 
 interface CommentsSectionProps {
   comments: Comment[];
   onAddComment: (text: string) => void;
+  onDeleteComment?: (id: string) => void;
   accentColor: string;
 }
 
-export default function CommentsSection({ comments, onAddComment, accentColor }: CommentsSectionProps) {
+export default function CommentsSection({ comments, onAddComment, onDeleteComment, accentColor }: CommentsSectionProps) {
   const [newComment, setNewComment] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -548,10 +551,21 @@ export default function CommentsSection({ comments, onAddComment, accentColor }:
               </div>
               <p className="text-gray-400 font-light">{comment.text}</p>
               
-              <button className="flex items-center space-x-1 text-[10px] text-gray-500 hover:text-gray-300 mt-1">
-                <Heart className="h-3 w-3" />
-                <span>{comment.likes}</span>
-              </button>
+              <div className="flex items-center justify-between mt-1.5">
+                <button className="flex items-center space-x-1 text-[10px] text-gray-500 hover:text-gray-300">
+                  <Heart className="h-3 w-3" />
+                  <span>{comment.likes}</span>
+                </button>
+                {onDeleteComment && (
+                  <button 
+                    onClick={() => onDeleteComment(comment.id)} 
+                    className="text-gray-600 hover:text-red-500 transition-colors cursor-pointer"
+                    title="Delete Comment"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         ))}
@@ -1051,7 +1065,7 @@ export async function listModels(): Promise<OllamaTag[]> {
     const data = await res.json();
     return (data.models || []) as OllamaTag[];
   } catch (err) {
-    console.error('listModels failed', err);
+    console.warn('listModels bypassed or loading local model failed', err);
     return [];
   }
 }

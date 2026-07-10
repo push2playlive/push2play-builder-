@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Play,
   Pause,
@@ -66,6 +66,7 @@ import {
   LogIn,
   LogOut
 } from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -83,6 +84,19 @@ import { buildPreviewSrcDoc } from "./lib/preview";
 import SettingsModal from "./components/SettingsModal";
 import { routeAIRequest } from "./lib/proxy";
 import { listModels } from "./lib/ollama";
+import { StakingRewardsCard } from "./components/StakingRewardsCard";
+import { checkFileSyntax, SyntaxErrorDetails } from "./lib/syntaxChecker";
+import { getRelativeTime } from "./lib/time";
+
+export interface IframeErrorDetails {
+  message: string;
+  line: number;
+  column: number;
+  stack?: string;
+  componentStack?: string;
+  file?: string;
+  detectedComponent?: string;
+}
 export interface VirtualVideo {
   id: string;
   title: string;
@@ -150,6 +164,110 @@ export default function App() {
   ]);
   const [editorContent, setEditorContent] = useState<string>("");
   const [unsavedChanges, setUnsavedChanges] = useState<Record<string, boolean>>({});
+  
+  // Real-time Syntax Checking State and Refs
+  const [syntaxError, setSyntaxError] = useState<SyntaxErrorDetails | null>(null);
+  const [runtimeError, setRuntimeError] = useState<IframeErrorDetails | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Sync scroll between textarea and mirror background overlay
+  const handleScroll = () => {
+    if (textareaRef.current && overlayRef.current) {
+      overlayRef.current.scrollTop = textareaRef.current.scrollTop;
+      overlayRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
+  };
+
+  const jumpToLine = (line: number) => {
+    if (textareaRef.current) {
+      const lineHeight = 18; // line height is h-[18px] from leading-[18px]
+      const containerHeight = textareaRef.current.clientHeight;
+      textareaRef.current.scrollTop = Math.max(0, (line - 1) * lineHeight - containerHeight / 2);
+      textareaRef.current.focus();
+    }
+  };
+
+  // Real-time syntax checking with a small debounce
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const err = checkFileSyntax(activeFile, editorContent);
+      setSyntaxError(err);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [editorContent, activeFile]);
+
+  // Intercept runtime/compilation errors from inside the sandbox iframe
+  const handleIframeMessage = useCallback((e: MessageEvent) => {
+    const data = e.data;
+    if (!data || typeof data !== "object") return;
+
+    if (data.type === "iframe-success") {
+      setRuntimeError(null);
+    } else if (data.type === "iframe-error" || data.type === "iframe-runtime-error") {
+      const message = data.message || "Unknown runtime error";
+      const stack = data.stack || "";
+      const componentStack = data.componentStack || "";
+      
+      let line = 1;
+      let column = 0;
+      let detectedComponent = "";
+
+      // 1. Try to find the component name from the React Component Stack
+      const compMatch = componentStack.match(/in\s+([A-Za-z0-9_]+)/);
+      if (compMatch && compMatch[1]) {
+        detectedComponent = compMatch[1];
+        const lines = editorContent.split("\n");
+        const regex = new RegExp(`(?:function|const|class|let|var)\\s+${detectedComponent}\\b`);
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            line = i + 1;
+            break;
+          }
+        }
+      }
+
+      // 2. Parse JS Stack trace line/col if no react component matches
+      if (line === 1 && stack) {
+        const anonMatch = stack.match(/<anonymous>:(\d+):(\d+)/) || stack.match(/eval.*:(\d+):(\d+)/);
+        if (anonMatch) {
+          line = parseInt(anonMatch[1], 10);
+          column = parseInt(anonMatch[2], 10);
+        } else {
+          const lineMatch = stack.match(/:(\d+):(\d+)\)?$/m) || stack.match(/:(\d+):(\d+)/);
+          if (lineMatch) {
+            line = parseInt(lineMatch[1], 10);
+            column = parseInt(lineMatch[2], 10);
+          }
+        }
+      }
+
+      // 3. Fallback to explicit lineno if provided
+      if (line === 1 && data.lineno) {
+        line = data.lineno;
+        column = data.colno || 0;
+      }
+
+      setRuntimeError({
+        message,
+        line: isNaN(line) ? 1 : line,
+        column: isNaN(column) ? 0 : column,
+        stack,
+        componentStack,
+        file: activeFile,
+        detectedComponent
+      });
+    }
+  }, [editorContent, activeFile]);
+
+  useEffect(() => {
+    window.addEventListener("message", handleIframeMessage);
+    return () => window.removeEventListener("message", handleIframeMessage);
+  }, [handleIframeMessage]);
+
+  useEffect(() => {
+    setRuntimeError(null);
+  }, [activeFile]);
   
   // --- AI Chat Assistant State ---
   const [chatInput, setChatInput] = useState("");
@@ -320,6 +438,34 @@ export default function App() {
   // --- Staking Simulated state ---
   const [stakedAmount, setStakedAmount] = useState(500);
   const [isStakingPending, setIsStakingPending] = useState(false);
+  const [stakingRewards, setStakingRewards] = useState(12.5);
+  const [stakingTarget] = useState(100);
+
+  // Real-time staking rewards accumulator
+  useEffect(() => {
+    if (stakedAmount <= 0) return;
+    const interval = setInterval(() => {
+      setStakingRewards(prev => {
+        // Grow proportionally to staked balance:
+        // E.g., 500 PPL staked adds 0.05 PPL per tick (every 100ms) = 0.5 PPL per second.
+        const increment = (stakedAmount / 500) * 0.05;
+        return prev + increment;
+      });
+    }, 100);
+    return () => clearInterval(interval);
+  }, [stakedAmount]);
+
+  const handleClaimRewards = () => {
+    if (stakingRewards < 1.0) return;
+    const toClaim = Math.floor(stakingRewards);
+    setAppConfig(prev => ({
+      ...prev,
+      tokenCount: prev.tokenCount + toClaim
+    }));
+    setStakingRewards(prev => prev - toClaim);
+    setLatestStatus(`Claimed ${toClaim} PPL staking rewards!`);
+    alert(`Successfully claimed ${toClaim} PPL staking rewards!`);
+  };
 
   // --- Memoized Trend Chart Data ---
   const trendsData = useMemo(() => {
@@ -444,6 +590,14 @@ export default function App() {
 
   // Safe save changes handler
   const handleSaveFile = () => {
+    const err = checkFileSyntax(activeFile, editorContent);
+    if (err) {
+      setSyntaxError(err);
+      setBuildError(`[Syntax Error in ${activeFile}]: ${err.message} (Line ${err.line}, Col ${err.column + 1})\n\nPlease fix this syntax issue before committing your changes.`);
+      setLatestStatus(`Commit Blocked: Syntax error in ${activeFile}`);
+      return;
+    }
+
     const updatedFiles = {
       ...virtualFiles,
       [activeFile]: editorContent
@@ -570,13 +724,18 @@ export default function App() {
       videoId: selectedVideo.id,
       author: "PushPlay Curator",
       text,
-      timestamp: "Just now",
+      timestamp: new Date().toISOString(),
       likes: 0
     };
 
     const updatedComments = [newComment, ...comments];
     
     // Convert current list back to typescript syntax in src/data.ts
+    updateVirtualDataFile(videos, updatedComments, creators);
+  };
+
+  const handleDeleteLiveComment = (commentId: string) => {
+    const updatedComments = comments.filter((c) => c.id !== commentId);
     updateVirtualDataFile(videos, updatedComments, creators);
   };
 
@@ -1158,23 +1317,160 @@ export const creators: Creator[] = ${stringifiedCreators};
             {/* Main Interactive Gutter + Textarea */}
             <div className="flex-1 flex overflow-hidden relative font-mono">
               {/* Dynamic Line Numbers */}
-              <div className="w-12 bg-[#0E0E10] border-r border-[#222222] py-4 text-right pr-3 select-none text-[11px] text-zinc-600 leading-relaxed font-mono">
-                {Array.from({ length: editorContent.split("\n").length || 1 }).map((_, idx) => (
-                  <div key={idx}>{idx + 1}</div>
-                ))}
+              <div className="w-12 bg-[#0E0E10] border-r border-[#222222] py-4 text-right pr-3 select-none text-[10px] text-zinc-600 font-mono overflow-hidden">
+                {Array.from({ length: editorContent.split("\n").length || 1 }).map((_, idx) => {
+                  const isSyntaxError = syntaxError && syntaxError.line === idx + 1;
+                  const isRuntimeError = runtimeError && runtimeError.file === activeFile && runtimeError.line === idx + 1;
+                  const isErrorLine = isSyntaxError || isRuntimeError;
+                  const errorMsg = isSyntaxError ? syntaxError?.message : runtimeError?.message;
+                  const errorType = isSyntaxError ? "SYNTAX" : "RUNTIME";
+
+                  return (
+                    <div 
+                      key={idx} 
+                      className={`h-[18px] leading-[18px] pr-1 flex items-center justify-end relative group ${
+                        isErrorLine 
+                          ? isSyntaxError 
+                            ? "text-red-500 font-bold bg-red-950/20" 
+                            : "text-amber-500 font-bold bg-amber-950/20"
+                          : ""
+                      }`}
+                    >
+                      {isErrorLine && (
+                        <span 
+                          className={`absolute left-1.5 w-1.5 h-1.5 rounded-full animate-pulse ${
+                            isSyntaxError ? "bg-red-500" : "bg-amber-500"
+                          }`} 
+                          title={`${errorType} ERROR: ${errorMsg}`} 
+                        />
+                      )}
+                      <span>{idx + 1}</span>
+                      {isErrorLine && (
+                        <div 
+                          className={`absolute left-14 top-1 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity border text-[10px] py-1.5 px-2.5 rounded shadow-xl whitespace-nowrap font-sans ${
+                            isSyntaxError 
+                              ? "bg-red-950 border-red-500 text-red-200" 
+                              : "bg-amber-500/10 bg-amber-950 border-amber-500 text-amber-200"
+                          }`}
+                        >
+                          <span className="font-bold mr-1">[{errorType}]</span> {errorMsg}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
-              {/* Raw Textarea Editor */}
-              <textarea
-                value={editorContent}
-                onChange={(e) => {
-                  setEditorContent(e.target.value);
-                  setUnsavedChanges(prev => ({ ...prev, [activeFile]: true }));
-                }}
-                className="flex-1 p-4 bg-[#0A0A0A] text-[#E0E0E0] text-[11px] leading-relaxed font-mono focus:outline-none resize-none overflow-y-auto"
-                spellCheck={false}
-                placeholder="// Enter code here..."
-              />
+              {/* Editor Workspace Layer */}
+              <div className="flex-1 relative overflow-hidden bg-[#0A0A0A]">
+                {/* Mirror Underlay for Squiggles */}
+                <div
+                  ref={overlayRef}
+                  className="absolute inset-0 p-4 bg-[#0A0A0A] text-transparent font-mono text-[11px] leading-[18px] pointer-events-none select-none overflow-hidden whitespace-pre z-0"
+                  style={{
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                  }}
+                >
+                  {editorContent.split("\n").map((lineText, idx) => {
+                    const isSyntaxError = syntaxError && syntaxError.line === idx + 1;
+                    const isRuntimeError = runtimeError && runtimeError.file === activeFile && runtimeError.line === idx + 1;
+                    const isErrorLine = isSyntaxError || isRuntimeError;
+                    const currentError = isSyntaxError ? syntaxError : runtimeError;
+
+                    if (isErrorLine && currentError) {
+                      const errorCol = Math.max(0, Math.min(currentError.column, lineText.length));
+                      const part1 = lineText.substring(0, errorCol);
+                      const errChar = lineText.substring(errorCol, errorCol + 1) || " ";
+                      const part2 = lineText.substring(errorCol + 1);
+
+                      return (
+                        <div 
+                          key={idx} 
+                          className={`h-[18px] leading-[18px] whitespace-pre flex items-center ${
+                            isSyntaxError ? "bg-red-950/15" : "bg-amber-950/15"
+                          }`}
+                        >
+                          <span>{part1}</span>
+                          <span 
+                            className={`border-b border-dashed font-bold ${
+                              isSyntaxError 
+                                ? "border-red-500 bg-red-500/20 text-red-400/80" 
+                                : "border-amber-500 bg-amber-500/20 text-amber-400/80"
+                            }`}
+                            style={{ 
+                              textDecoration: isSyntaxError 
+                                ? "underline wave red 1px" 
+                                : "underline wave orange 1px",
+                              borderBottomStyle: 'dashed'
+                            }}
+                          >
+                            {errChar}
+                          </span>
+                          <span>{part2}</span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={idx} className="h-[18px] leading-[18px] whitespace-pre flex items-center">
+                        {lineText || " "}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Raw Textarea Editor */}
+                <textarea
+                  ref={textareaRef}
+                  value={editorContent}
+                  onScroll={handleScroll}
+                  onChange={(e) => {
+                    setEditorContent(e.target.value);
+                    setUnsavedChanges(prev => ({ ...prev, [activeFile]: true }));
+                  }}
+                  className="absolute inset-0 p-4 bg-transparent text-[#E0E0E0] text-[11px] leading-[18px] font-mono focus:outline-none resize-none overflow-auto whitespace-pre z-10"
+                  style={{
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    caretColor: '#ffffff',
+                  }}
+                  spellCheck={false}
+                  placeholder="// Enter code here..."
+                />
+              </div>
+            </div>
+
+            {/* Problems/Syntax Status Bar */}
+            <div className={`h-7 border-t flex items-center justify-between px-4 text-[9px] font-bold uppercase tracking-wider select-none flex-shrink-0 ${
+              syntaxError 
+                ? "bg-red-950/20 border-red-900/40 text-red-400" 
+                : runtimeError && runtimeError.file === activeFile
+                  ? "bg-amber-950/20 border-amber-900/40 text-amber-400"
+                  : "bg-[#0E0E10] border-[#222222] text-emerald-500"
+            }`}>
+              <div className="flex items-center gap-1.5 font-mono">
+                {syntaxError ? (
+                  <>
+                    <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-ping" />
+                    <span>SYNTAX ERROR: {syntaxError.message} (L: {syntaxError.line}, C: {syntaxError.column + 1})</span>
+                  </>
+                ) : runtimeError && runtimeError.file === activeFile ? (
+                  <>
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-ping" />
+                    <span>RUNTIME EXCEPTION: {runtimeError.message} (L: {runtimeError.line}, C: {runtimeError.column + 1})</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    <span>SYNTAX & RUNTIME PASS - READY</span>
+                  </>
+                )}
+              </div>
+              <div className="text-zinc-500 text-[8px] font-sans">
+                {syntaxError 
+                  ? "FIX SMART SQUIGGLES BEFORE SAVING" 
+                  : runtimeError && runtimeError.file === activeFile
+                    ? "RUNTIME EXCEPTION INTERCEPTED"
+                    : "REAL-TIME SYNTAX & RUNTIME MONITOR"}
+              </div>
             </div>
           </div>
         </main>
@@ -1293,10 +1589,10 @@ export const creators: Creator[] = ${stringifiedCreators};
               </div>
             ) : activePreviewTab === "sandbox" ? (
               /* REAL SANDBOX IFRAME VIEW */
-              <div className="w-full h-full bg-[#0a0a0a] rounded-2xl border border-zinc-800 shadow-2xl overflow-hidden flex flex-col">
+              <div className="w-full h-full bg-[#0a0a0a] rounded-2xl border border-zinc-800 shadow-2xl overflow-hidden flex flex-col relative">
                 <div className="px-4 py-2 bg-[#141416] border-b border-zinc-800 text-[10px] font-mono flex items-center justify-between text-zinc-400 flex-shrink-0">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className={`w-2 h-2 rounded-full ${runtimeError ? "bg-amber-500 animate-ping" : "bg-emerald-500 animate-pulse"}`}></span>
                     <span className="font-bold text-zinc-300">Live In-Browser Sandbox</span>
                     <span className="text-[9px] text-zinc-500 px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800">{activeFile}</span>
                   </div>
@@ -1310,6 +1606,114 @@ export const creators: Creator[] = ${stringifiedCreators};
                     sandbox="allow-scripts"
                     srcDoc={buildPreviewSrcDoc(editorContent)}
                   />
+
+                  {/* ERROR BOUNDARY VISUALIZATION OVERLAY */}
+                  <AnimatePresence>
+                    {runtimeError && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 15 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 15 }}
+                        className="absolute inset-0 bg-[#070709]/95 backdrop-blur-md p-6 flex flex-col overflow-y-auto space-y-4 z-50 text-left border-t border-amber-500/25"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-2 text-amber-500">
+                            <span className="p-1 rounded bg-amber-500/10 border border-amber-500/30">
+                              <span className="font-sans text-xs">⚠️</span>
+                            </span>
+                            <div>
+                              <h3 className="text-xs font-black tracking-widest uppercase text-amber-500">
+                                Runtime Exception Intercepted
+                              </h3>
+                              <p className="text-[9px] text-zinc-500 uppercase font-mono tracking-wider font-bold">
+                                Live sandbox boundary trigger
+                              </p>
+                            </div>
+                          </div>
+                          
+                          <button
+                            onClick={() => setRuntimeError(null)}
+                            className="px-2.5 py-1 text-[9px] font-bold text-zinc-400 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:text-white rounded-lg transition-all"
+                          >
+                            DISMISS
+                          </button>
+                        </div>
+
+                        {/* Error Message Card */}
+                        <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-4 space-y-3 shadow-lg shadow-amber-950/10">
+                          <div className="font-mono text-[11px] text-amber-200 font-bold leading-relaxed break-words whitespace-pre-wrap">
+                            {runtimeError.message}
+                          </div>
+                          
+                          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-amber-500/10 text-[10px]">
+                            <span className="text-zinc-500 font-bold font-mono">Location:</span>
+                            <span className="text-zinc-300 font-mono font-medium truncate max-w-[200px]">
+                              {runtimeError.file}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-bold font-mono text-[9px]">
+                              Line {runtimeError.line}, Col {runtimeError.column + 1}
+                            </span>
+                            {runtimeError.detectedComponent && (
+                              <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 font-bold font-mono text-[9px]">
+                                Component: &lt;{runtimeError.detectedComponent} /&gt;
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Interactive Highlight Action */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              if (runtimeError.line) {
+                                jumpToLine(runtimeError.line);
+                              }
+                            }}
+                            className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-black font-black text-[10px] rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/10 cursor-pointer"
+                          >
+                            <span>🎯</span>
+                            <span>HIGHLIGHT IN CODE EDITOR (LINE {runtimeError.line})</span>
+                          </button>
+                        </div>
+
+                        {/* React Stack Trace View */}
+                        <div className="flex-1 flex flex-col min-h-[120px] bg-black/40 border border-zinc-900 rounded-xl p-3 overflow-hidden">
+                          <div className="text-[9px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center justify-between flex-shrink-0">
+                            <span>Interactive Call Stack</span>
+                            <span className="font-mono text-[8px] font-bold text-zinc-600">Trace Logs</span>
+                          </div>
+                          
+                          <div className="flex-1 overflow-y-auto text-[9px] font-mono text-zinc-400 space-y-2 select-text pr-2 custom-scrollbar">
+                            {runtimeError.componentStack && (
+                              <div className="space-y-1">
+                                <span className="text-[8px] text-blue-400/80 font-bold uppercase tracking-wider font-sans block">
+                                  React Component Stack
+                                </span>
+                                <pre className="whitespace-pre-wrap leading-relaxed text-zinc-300 bg-blue-950/10 border border-blue-900/10 p-2 rounded-lg">
+                                  {runtimeError.componentStack.trim()}
+                                </pre>
+                              </div>
+                            )}
+
+                            {runtimeError.stack && (
+                              <div className="space-y-1 pt-2">
+                                <span className="text-[8px] text-amber-500/80 font-bold uppercase tracking-wider font-sans block">
+                                  JavaScript Trace Stack
+                                </span>
+                                <pre className="whitespace-pre-wrap leading-normal text-zinc-500 bg-zinc-950/60 p-2 rounded-lg overflow-x-auto max-h-[150px]">
+                                  {runtimeError.stack.trim()}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="text-[8px] text-zinc-600 text-center font-sans font-semibold uppercase tracking-wider select-none flex-shrink-0">
+                          Error Boundary Visualizer • Real-time Sandbox Feedback
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
             ) : (
@@ -1640,17 +2044,24 @@ export const creators: Creator[] = ${stringifiedCreators};
                             {/* Feed comments scrolling container */}
                             <div className="max-h-24 overflow-y-auto space-y-2 pr-1">
                               {comments.filter(c => c.videoId === selectedVideo.id).map(c => (
-                                <div key={c.id} className="bg-[#141416] p-2 rounded border border-gray-800 flex items-start gap-2">
+                                <div key={c.id} className="bg-[#141416] p-2 rounded border border-gray-800 flex items-start gap-2 group relative">
                                   <div className="w-5 h-5 rounded-full bg-zinc-800 text-[8px] flex items-center justify-center font-bold text-zinc-400 flex-shrink-0">
                                     {c.author.slice(0,2)}
                                   </div>
                                   <div className="flex-1 min-w-0">
                                     <div className="flex justify-between items-center text-[7px] text-zinc-500 font-bold mb-0.5">
                                       <span>{c.author}</span>
-                                      <span>{c.timestamp}</span>
+                                      <span>{getRelativeTime(c.timestamp)}</span>
                                     </div>
                                     <p className="text-[8px] text-zinc-300 leading-normal font-light">{c.text}</p>
                                   </div>
+                                  <button
+                                    onClick={() => handleDeleteLiveComment(c.id)}
+                                    className="opacity-0 group-hover:opacity-100 absolute right-2 top-2 text-zinc-600 hover:text-red-500 transition-all p-0.5 cursor-pointer"
+                                    title="Delete Comment"
+                                  >
+                                    <Trash2 className="h-2.5 w-2.5" />
+                                  </button>
                                 </div>
                               ))}
                             </div>
@@ -2381,6 +2792,15 @@ export const creators: Creator[] = ${stringifiedCreators};
                             </button>
                           </div>
                         </div>
+
+                        {/* Real-time Staking Rewards Card */}
+                        <StakingRewardsCard
+                          accentColor={appConfig.accentColor}
+                          stakedAmount={stakedAmount}
+                          stakingRewards={stakingRewards}
+                          stakingTarget={stakingTarget}
+                          onClaimRewards={handleClaimRewards}
+                        />
 
                         {/* Recent ledger records */}
                         <div className="space-y-1.5">

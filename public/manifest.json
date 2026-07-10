@@ -1,13 +1,13 @@
 {
-  "name": "PushPlay Studio & Video Platform",
-  "short_name": "PushPlay",
-  "description": "High-fidelity video streaming and developer compliance platform.",
+  "name": "Utube Media Video Platform",
+  "short_name": "Utube",
+  "description": "High-fidelity, polished, PWA-enabled video, shorts, and music platform.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0c0c0e",
-  "theme_color": "#f59e0b",
+  "background_color": "#030303",
+  "theme_color": "#c084fc",
   "orientation": "portrait",
-  "categories": ["video", "entertainment", "development"],
+  "categories": ["video", "entertainment", "music"],
   "icons": [
     {
       "src": "https://img.icons8.com/nolan/256/youtube-play.png",

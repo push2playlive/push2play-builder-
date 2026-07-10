@@ -114,7 +114,7 @@ chatRouter.post("/messages/:roomId", async (req: Request, res: Response) => {
   } else if (chatAi) {
     try {
       // Use Gemini to produce an intelligent context-aware stream comment reply
-      const model = "gemini-3.5-flash";
+      const model = "gemini-2.5-flash";
       const prompt = `You are a live viewer on a video platform chat stream.
 Room ID: ${roomId}
 User "${author || "Anonymous"}" says: "${text}"
